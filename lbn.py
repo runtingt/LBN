@@ -692,7 +692,7 @@ class FeatureFactoryBase(object):
 
 class FeatureFactory(FeatureFactoryBase):
     """
-    Default feature factory implementing various generic feature mappings.
+    Default feature factory implementing various generic feature mappings, plus b[1-4] and a[1-2] variables
     """
 
     def __init__(self, lbn):
@@ -826,7 +826,111 @@ class FeatureFactory(FeatureFactoryBase):
         """
         Normalized, transposed momentum vector. Hidden.
         """
-        return tf.transpose(self._pvec_norm(**opts), perm=[0, 2, 1])
+        return tf.transpose(self._pvec_norm(**opts), perm=[0, 2, 1]) # Transpose in the 'batch' dimension
+
+    @FeatureFactoryBase.hidden_feature
+    def _px_norm(self, **opts):
+        """
+        Normalized px (to pt, *NOT* |p|). Hidden.
+        """
+        return tf.expand_dims(self.px(**opts), axis=-1) / tf.expand_dims(self.pt(**opts), axis=-1)
+
+    @FeatureFactoryBase.hidden_feature
+    def _px_norm_T(self, **opts):
+        """
+        Normalized, transposed px (to pt, *NOT* |p|). Hidden.
+        """
+        return tf.transpose(self._px_norm(**opts), perm=[0, 2, 1])
+
+    @FeatureFactoryBase.hidden_feature
+    def _pz_norm(self, **opts):
+        """
+        Normalized pz. Hidden.
+        """
+        return tf.expand_dims(self.pz(**opts), axis=-1) / tf.expand_dims(self.p(**opts), axis=-1)
+
+    @FeatureFactoryBase.hidden_feature
+    def _pz_norm_T(self, **opts):
+        """
+        Normalized, transposed pz. Hidden.
+        """
+        return tf.transpose(self._pz_norm(**opts), perm=[0, 2, 1])
+
+    @FeatureFactoryBase.pair_feature
+    def b1(self, **opts):
+        """
+        b1(a, b) = ((p(a) x hat{z}) / pT(a)) . ((p(b) x hat{z}) / pT(b)),
+        but p x hat{z} = py hat{x} -  px hat{y}
+        """
+        # Get b1 for all pairs
+        temp = tf.transpose(tf.stack([self.py(**opts), -self.px(**opts), self.pz(**opts)-self.pz(**opts)], axis=1), perm=[0, 2, 1])
+        temp /= tf.expand_dims(self.pt(**opts), axis=-1)
+        all_b1  = tf.matmul(temp, tf.transpose(temp, perm=[0, 2, 1]))
+
+        # Return only upper triangle without diagonal
+        return tf.gather(tf.reshape(all_b1, [-1, self.n**2]), self.triu_indices, axis=1)
+
+    @FeatureFactoryBase.pair_feature
+    def b2(self, **opts):
+        """
+        b2(a, b) = ((p(a) x hat{z}) / |p(a)|) . ((p(b) x hat{z}) / |p(b)|),
+        but p x hat{z} = py hat{x} -  px hat{y}
+        """
+        # Get b2 for all pairs
+        temp = tf.transpose(tf.stack([self.py(**opts), -self.px(**opts), self.pz(**opts)-self.pz(**opts)], axis=1), perm=[0, 2, 1])
+        temp /= tf.linalg.normalize(self._pvec(**opts), axis=2)[1]
+        all_b2  = tf.matmul(temp, tf.transpose(temp, perm=[0, 2, 1]))
+
+        # Return only upper triangle without diagonal
+        return tf.gather(tf.reshape(all_b2, [-1, self.n**2]), self.triu_indices, axis=1)
+
+    @FeatureFactoryBase.pair_feature
+    def b3(self, **opts):
+        """
+        Ratio of the product of px and pT:
+        b3(a, b) = (px(a) * px(b)) / (pT(a) * pT(b)) = (px(a) / pT(a)) * (px(b) / pT(b))
+        """
+        # Get b3 for all pairs. Matrix multiplcation (and the transpose) ensures we pick up all possible pairs
+        all_b3 = tf.matmul(self._px_norm(**opts), self._px_norm_T(**opts))
+
+        # Return only upper triangle without diagonal (ensuring we don't double count, or include b3(a, a))]
+        return tf.gather(tf.reshape(all_b3, [-1, self.n**2]), self.triu_indices, axis=1)
+
+    @FeatureFactoryBase.pair_feature
+    def b4(self, **opts):
+        """
+        Ratio of the product of pz and p:
+        b4(a, b) = (pz(a) * pz(b)) / (|p(a)| * |p(b)|) = (pz(a) / |p(a)|) * (pz(b) / |p(b)|)
+        """
+        # Get b4 for all pairs. Matrix multiplcation (and the transpose) ensures we pick up all possible pairs
+        all_b4 = tf.matmul(self._pz_norm(**opts), self._pz_norm_T(**opts))
+
+        # Return only upper triangle without diagonal (ensuring we don't double count, or include b4(a, a))]
+        return tf.gather(tf.reshape(all_b4, [-1, self.n**2]), self.triu_indices, axis=1)
+
+    @FeatureFactoryBase.pair_feature
+    def a1(self, **opts):
+        """
+        Sign of (p(a) x hat{z}) . (p(b) x hat{z}), but p x hat{z} = py hat{x} -  px hat{y}
+        """
+        # Get a1 for all pairs
+        temp = tf.transpose(tf.stack([self.py(**opts), -self.px(**opts), self.pz(**opts)-self.pz(**opts)], axis=1), perm=[0, 2, 1])
+        all_a1 = tf.sign(tf.matmul(temp, tf.transpose(temp, perm=[0, 2, 1])))
+
+        # Return only upper triangle without diagonal
+        return tf.gather(tf.reshape(all_a1, [-1, self.n**2]), self.triu_indices, axis=1)
+
+    @FeatureFactoryBase.pair_feature
+    def a2(self, **opts):
+        """
+        Sign of px(a) * px(b)
+        """
+        # Get a2 for all pairs
+        all_a2 = tf.matmul(tf.expand_dims(self.px(**opts), axis=-1), tf.transpose(tf.expand_dims(self.px(**opts), axis=-1), perm=[0, 2, 1]))
+        all_a2 = tf.sign(all_a2)
+
+        # Return only upper triangle without diagonal
+        return tf.gather(tf.reshape(all_a2, [-1, self.n**2]), self.triu_indices, axis=1)
 
     @FeatureFactoryBase.pair_feature
     def pair_cos(self, **opts):
